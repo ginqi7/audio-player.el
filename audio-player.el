@@ -24,16 +24,25 @@
 
 ;;; Code:
 (require 'eieio)
-(require 'transient)
 (require 'audio-player-backend-api)
-
-(defvar audio-player-update-hooks nil
-  "Hook run after any player state update.
-Each function is called with no arguments after state changes like
-position, duration, playlist, status, etc.")
+(require 'transient)
 
 (defcustom audio-player-seek-step 30
   "Default number of seconds to seek forward or backward.")
+
+(defclass audio-player ()
+  ((backend :initarg :backend :initform nil
+             :documentation "Backend instance (e.g., audio-player-mpv) handling playback.")
+   (playlist :initarg :playlist :initform nil
+             :documentation "List of audio-player-playlist-item objects.")
+   (playlist-pos :initarg :playlist-pos :initform 0
+                 :documentation "Current position index in the playlist.")
+   (status :initarg :status :initform nil
+           :documentation "Playback status, either 'playing or 'paused.")
+   (repeat :initarg :repeat :initform nil
+           :documentation "Non-nil means repeat mode is enabled.")
+   (shuffle :initarg :shuffle :initform nil
+            :documentation "Non-nil means shuffle mode is enabled.")))
 
 (defclass audio-player-playlist-item ()
   ((id :initarg :id :initform nil
@@ -51,88 +60,13 @@ position, duration, playlist, status, etc.")
    (cover-url :initarg :cover-url
               :documentation "URL of the cover art image.")))
 
-(defclass audio-player ()
-  ((backend :initarg :backend :initform nil
-             :documentation "Backend instance (e.g., audio-player-mpv) handling playback.")
-   (playlist :initarg :playlist :initform nil
-             :documentation "List of audio-player-playlist-item objects.")
-   (playlist-pos :initarg :playlist-pos :initform 0
-                 :documentation "Current position index in the playlist.")
-   (status :initarg :status :initform nil
-           :documentation "Playback status, either 'playing or 'paused.")
-   (repeat :initarg :repeat :initform nil
-           :documentation "Non-nil means repeat mode is enabled.")
-   (shuffle :initarg :shuffle :initform nil
-            :documentation "Non-nil means shuffle mode is enabled.")))
-
 (defvar audio-player--instance (audio-player)
   "Ephemeral player state for mpv processes and sockets.")
 
-(defun audio-player-update-status (status)
-  "Update the player's playback status to STATUS.
-STATUS should be 'playing or 'paused."
-  (oset audio-player--instance status status))
-
-(defun audio-player-update-artist (artist)
-  "Update the artist name of the currently playing track to ARTIST."
-  (when-let* ((playing-item (audio-player-current-playing)))
-    (oset playing-item artist artist)))
-
-(defun audio-player-current-playing ()
-  "Return the currently playing audio-player-playlist-item, or nil if none."
-  (when-let* ((playlist (oref audio-player--instance playlist))
-              (playlist-pos (oref audio-player--instance playlist-pos)))
-    (nth playlist-pos playlist)))
-
-(defun audio-player-update-position (position)
-  "Update the current playback position to POSITION seconds."
-  (when-let* ((playing-item (audio-player-current-playing)))
-    (oset playing-item position position)))
-
-(defun audio-player-update-duration (duration)
-  "Update the total duration of the current track to DURATION seconds."
-  (when-let* ((playing-item (audio-player-current-playing)))
-    (when duration
-      (oset playing-item duration duration))))
-
-(defun audio-player-update-playlist-item (old new)
-  "Merge metadata from NEW into existing playlist item OLD.
-Only copies id, title, and artist properties when OLD lacks them."
-  (when new
-    (dolist (prop '(id title artist))
-      (when (and (not (eieio-oref old prop))
-                 (eieio-oref new prop))
-        (eieio-oset old prop (eieio-oref new prop))))
-    old))
-
-(defun audio-player-update-playlist (playlist)
-  "Merge new playlist items into the existing playlist.
-Updates metadata (title, artist, etc.) for existing items by URL."
-  (let ((playlist-hash (make-hash-table :test #'equal))
-        (current-playlist (oref audio-player--instance playlist)))
-    (mapc (lambda (item) (puthash (oref item url) item playlist-hash)) playlist)
-    (oset audio-player--instance playlist
-          (remove nil (mapcar (lambda (item)
-                                (audio-player-update-playlist-item
-                                 item
-                                 (gethash (oref item url) playlist-hash)))
-                              current-playlist)))))
-
-(defun audio-player-update-playlist-pos (playlist-pos)
-  "Update the current playlist position to PLAYLIST-POS."
-  (oset audio-player--instance playlist-pos playlist-pos))
-
-(defun audio-player-toggle()
-  "Toggle playback between playing and paused states."
-  (interactive)
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-toggle backend)))
-
-(defun audio-player-seek(seconds)
-  "Seek to absolute position SECONDS in the current track."
-  (interactive "nSeconds: ")
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-seek backend seconds "absolute")))
+(defvar audio-player-update-hooks nil
+  "Hook run after any player state update.
+Each function is called with no arguments after state changes like
+position, duration, playlist, status, etc.")
 
 (defun audio-player--audio-file-p (file)
   "Check if FILE is an audio file using mailcap."
@@ -140,17 +74,25 @@ Updates metadata (title, artist, etc.) for existing items by URL."
               (type (mailcap-extension-to-mime extension)))
     (string-prefix-p "audio/" type)))
 
+(defun audio-player--hms-to-seconds (hms)
+  "Convert a string in HH:MM:SS format to total seconds."
+  (let ((parts (reverse (mapcar #'string-to-number (split-string hms ":")))))
+    (+ (or (nth 0 parts) 0)                 ; Seconds
+       (* (or (nth 1 parts) 0) 60)          ; Minutes
+       (* (or (nth 2 parts) 0) 3600))))     ; Hours
+
+(defun audio-player--playlist-item-format (item)
+  "Return a formatted string representation of playlist ITEM."
+  (format "[%s] %s (%s)"
+          (oref item id)
+          (oref item title)
+          (oref item artist)))
+
 (defun audio-player-add-directory (directory)
   "Add all audio files from DIRECTORY to the playlist recursively."
   (interactive "DSelect an audio directory ")
   (mapcar #'audio-player-add-file
           (seq-filter #'audio-player--audio-file-p (directory-files directory t))))
-
-(cl-defmethod audio-player-add-playlist-item ((item audio-player-playlist-item))
-  (let ((playlist (oref audio-player--instance playlist)))
-    (oset audio-player--instance playlist (append playlist (list item))))
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-add backend (oref item url))))
 
 (defun audio-player-add-file (file)
   "Add FILE to the playlist and start playback.
@@ -164,45 +106,11 @@ URL should be a valid audio URL (http, https, etc.)."
   (interactive "sURL: ")
   (audio-player-add-playlist-item (audio-player-playlist-item :url url)))
 
-(defun audio-player-next ()
-  "Skip to the next track in the playlist."
-  (interactive)
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-next backend)))
-
-(defun audio-player-previous ()
-  "Go to the previous track in the playlist."
-  (interactive)
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-prev backend)))
-
-(defun audio-player-seek-forward ()
-  "Seek forward by `audio-player-seek-step' seconds."
-  (interactive)
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-seek backend audio-player-seek-step "relative")))
-
-(defun audio-player-seek-previous ()
-  "Seek backward by `audio-player-seek-step' seconds."
-  (interactive)
-  (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-seek backend (- 0 audio-player-seek-step) "relative")))
-
-(defun audio-player--playlist-item-format (item)
-  "Return a formatted string representation of playlist ITEM."
-  (format "[%s] %s (%s)"
-          (oref item id)
-          (oref item title)
-          (oref item artist)))
-
-(defun audio-player-select-in-playlist (playlist)
-  "Prompt the user to select an item from PLAYLIST and return its index."
-  (let ((selected-str (completing-read
-                       "Select an audio in Playlist: "
-                       (mapcar #'audio-player--playlist-item-format playlist))))
-    (cl-position-if
-     (lambda (item) (string= selected-str (audio-player--playlist-item-format item)))
-     playlist)))
+(defun audio-player-current-playing ()
+  "Return the currently playing audio-player-playlist-item, or nil if none."
+  (when-let* ((playlist (oref audio-player--instance playlist))
+              (playlist-pos (oref audio-player--instance playlist-pos)))
+    (nth playlist-pos playlist)))
 
 (defun audio-player-find (&optional index)
   "Find and play a track from the current playlist.
@@ -214,6 +122,24 @@ Otherwise, prompt the user to select a track interactively."
     (audio-player-index
      (or index
          (audio-player-select-in-playlist playlist)))))
+
+(defun audio-player-index (index)
+  "Play the track at playlist position INDEX."
+  (interactive "nPlease input index of playlist: ")
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-play-index backend index)))
+
+(defun audio-player-next ()
+  "Skip to the next track in the playlist."
+  (interactive)
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-next backend)))
+
+(defun audio-player-previous ()
+  "Go to the previous track in the playlist."
+  (interactive)
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-prev backend)))
 
 (defun audio-player-remove (&optional index)
   "Remove a track from the playlist.
@@ -232,11 +158,40 @@ Otherwise, prompt the user to select a track to remove."
   (when-let* ((backend (oref audio-player--instance backend)))
     (audio-player-backend-remove-index backend index)))
 
-(defun audio-player-index (index)
-  "Play the track at playlist position INDEX."
-  (interactive "nPlease input index of playlist: ")
+(defun audio-player-restart ()
+  "Stop and restart the audio player backend."
+  (interactive)
+  (audio-player-stop)
+  (audio-player-start))
+
+(defun audio-player-seek(seconds)
+  "Seek to absolute position SECONDS in the current track."
+  (interactive "sPlease Input (Seconds or HH:MM:SS): ")
+  (when (stringp seconds)
+    (setq seconds (audio-player--hms-to-seconds seconds)))
   (when-let* ((backend (oref audio-player--instance backend)))
-    (audio-player-backend-play-index backend index)))
+    (audio-player-backend-seek backend seconds "absolute")))
+
+(defun audio-player-seek-forward ()
+  "Seek forward by `audio-player-seek-step' seconds."
+  (interactive)
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-seek backend audio-player-seek-step "relative")))
+
+(defun audio-player-seek-previous ()
+  "Seek backward by `audio-player-seek-step' seconds."
+  (interactive)
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-seek backend (- 0 audio-player-seek-step) "relative")))
+
+(defun audio-player-select-in-playlist (playlist)
+  "Prompt the user to select an item from PLAYLIST and return its index."
+  (let ((selected-str (completing-read
+                       "Select an audio in Playlist: "
+                       (mapcar #'audio-player--playlist-item-format playlist))))
+    (cl-position-if
+     (lambda (item) (string= selected-str (audio-player--playlist-item-format item)))
+     playlist)))
 
 (defun audio-player-start ()
   "Start the audio player and backend process."
@@ -251,11 +206,65 @@ Otherwise, prompt the user to select a track to remove."
     (audio-player-backend-stop backend)
     (setq audio-player--instance (audio-player :backend backend))))
 
-(defun audio-player-restart ()
-  "Stop and restart the audio player backend."
+(defun audio-player-toggle()
+  "Toggle playback between playing and paused states."
   (interactive)
-  (audio-player-stop)
-  (audio-player-start))
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-toggle backend)))
+
+(defun audio-player-update-artist (artist)
+  "Update the artist name of the currently playing track to ARTIST."
+  (when-let* ((playing-item (audio-player-current-playing)))
+    (oset playing-item artist artist)))
+
+(defun audio-player-update-duration (duration)
+  "Update the total duration of the current track to DURATION seconds."
+  (when-let* ((playing-item (audio-player-current-playing)))
+    (when duration
+      (oset playing-item duration duration))))
+
+(defun audio-player-update-playlist (playlist)
+  "Merge new playlist items into the existing playlist.
+Updates metadata (title, artist, etc.) for existing items by URL."
+  (let ((playlist-hash (make-hash-table :test #'equal))
+        (current-playlist (oref audio-player--instance playlist)))
+    (mapc (lambda (item) (puthash (oref item url) item playlist-hash)) playlist)
+    (oset audio-player--instance playlist
+          (remove nil (mapcar (lambda (item)
+                                (audio-player-update-playlist-item
+                                 item
+                                 (gethash (oref item url) playlist-hash)))
+                              current-playlist)))))
+
+(defun audio-player-update-playlist-item (old new)
+  "Merge metadata from NEW into existing playlist item OLD.
+Only copies id, title, and artist properties when OLD lacks them."
+  (when new
+    (dolist (prop '(id title artist))
+      (when (and (not (eieio-oref old prop))
+                 (eieio-oref new prop))
+        (eieio-oset old prop (eieio-oref new prop))))
+    old))
+
+(defun audio-player-update-playlist-pos (playlist-pos)
+  "Update the current playlist position to PLAYLIST-POS."
+  (oset audio-player--instance playlist-pos playlist-pos))
+
+(defun audio-player-update-position (position)
+  "Update the current playback position to POSITION seconds."
+  (when-let* ((playing-item (audio-player-current-playing)))
+    (oset playing-item position position)))
+
+(defun audio-player-update-status (status)
+  "Update the player's playback status to STATUS.
+STATUS should be 'playing or 'paused."
+  (oset audio-player--instance status status))
+
+(cl-defmethod audio-player-add-playlist-item ((item audio-player-playlist-item))
+  (let ((playlist (oref audio-player--instance playlist)))
+    (oset audio-player--instance playlist (append playlist (list item))))
+  (when-let* ((backend (oref audio-player--instance backend)))
+    (audio-player-backend-add backend (oref item url))))
 
 (transient-define-prefix audio-player-menu ()
   [:description
@@ -292,5 +301,4 @@ current [%s] is (%s) [%s]"
      (">" "Next Audio" audio-player-next)]])
 
 (provide 'audio-player)
-
 ;;; audio-player.el ends here

@@ -18,8 +18,8 @@
 ;;; Commentary:
 ;;
 ;;; Code:
-
 (require 'audio-player)
+
 (require 'vui)
 
 (defconst audio-player-ui--buffer-name "*audio-player-now-playing*"
@@ -234,8 +234,7 @@ When DURATION is not known, return a fixed-width placeholder bar."
                (filled (min width
                             (floor (* ratio width)))))
           (concat
-           (propertize (make-string filled ?▰)
-                       'face 'audio-player-ui-progress-filled)
+           (make-string filled ?▰)
            (propertize (make-string (- width filled) ?▱) 'face 'shadow)))
       (propertize (make-string width ?▱) 'face 'shadow))))
 
@@ -364,7 +363,7 @@ component tree in `audio-player-ui--vui-component'."
   (remove-hook 'window-size-change-functions
                #'audio-player-ui--reposition-on-resize))
 
-(defun audio-player-ui-refresh ()
+(defun audio-player-ui-refresh (&optional msg)
   "Re-render the now-playing UI by updating the VUI component.
 This is called via `audio-player-update-hooks' when player state changes."
   (when audio-player-ui--vui-component
@@ -377,8 +376,6 @@ FOCUS is accepted for compatibility; child frames stay non-focusable."
   (let ((buffer (audio-player-ui--playing-buffer)))
     (audio-player-ui--render-buffer)
     (audio-player-ui--show-child-frame buffer focus)))
-
-(provide 'audio-player-ui)
 
 (define-derived-mode audio-player-ui--now-playing-mode special-mode "audio-player-ui-now"
   "Major mode for the audio-player-ui now-playing child frame."
@@ -410,4 +407,6 @@ FOCUS is accepted for compatibility; child frames stay non-focusable."
      (audio-player-ui--vui-playing-controls)))
 
 (add-to-list 'audio-player-update-hooks #'audio-player-ui-refresh)
+
+(provide 'audio-player-ui)
 ;;; audio-player-ui.el ends here

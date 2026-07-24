@@ -23,10 +23,11 @@
 ;;
 
 ;;; Code:
+(require 'audio-player)
+
+(require 'audio-player-backend-api)
 
 (require 'eieio)
-(require 'audio-player)
-(require 'audio-player-backend-api)
 
 (defcustom audio-player-debug-p nil
   "When non-nil, log IPC commands sent to mpv process."
@@ -102,12 +103,6 @@ extra arguments can override them."
   "Return non-nil when PROCESS is the active mpv IPC connection."
   (eq process (oref audio-player-mpv--instance ipc-process)))
 
-(defun audio-player-mpv--to-artist (data)
-  "Extract artist name from mpv metadata DATA.
-Returns the ARTIST value from the metadata hash table, or an empty string."
-  (when data
-    (or (gethash "ARTIST" data) "")))
-
 (defun audio-player-mpv--event (event msg)
   "Mirror mpv EVENT and MSG into player state."
   (let ((data (gethash "data" msg)))
@@ -129,7 +124,7 @@ Returns the ARTIST value from the metadata hash table, or an empty string."
           (audio-player-update-playlist-pos data))
          ("metadata"
           (audio-player-update-artist (audio-player-mpv--to-artist data))))
-       (mapc #'funcall audio-player-update-hooks))
+       (mapc (lambda (hook) (funcall hook msg)) audio-player-update-hooks))
       ("end-file"
        (when (equal (gethash "reason" msg) "error")
          (message "Playback error: %s"
@@ -219,6 +214,12 @@ Kills the live mpv process and replaces the singleton with a fresh instance."
       (kill-process process)
       (setq audio-player-mpv--instance (audio-player-mpv)))))
 
+(defun audio-player-mpv--to-artist (data)
+  "Extract artist name from mpv metadata DATA.
+Returns the ARTIST value from the metadata hash table, or an empty string."
+  (when data
+    (or (gethash "ARTIST" data) "")))
+
 (defun audio-player-mpv--to-playlist-item (hash)
   "Convert mpv playlist HASH entry to an audio-player-playlist-item.
 Extracts id, filename (as url), and title from the hash table."
@@ -243,9 +244,21 @@ Extracts id, filename (as url), and title from the hash table."
   "Skip to the next track in the mpv playlist."
   (audio-player-mpv--send (list "playlist-next")))
 
+(cl-defmethod audio-player-backend-play-index ((backend audio-player-mpv) index)
+  "Play the track at playlist position INDEX."
+  (audio-player-mpv--send (list "playlist-play-index" index)))
+
 (cl-defmethod audio-player-backend-prev ((backend audio-player-mpv))
   "Go to the previous track in the mpv playlist."
   (audio-player-mpv--send (list "playlist-prev")))
+
+(cl-defmethod audio-player-backend-ready-p ((backend audio-player-backend))
+  "Return non-nil when the mpv backend is ready to accept IPC commands."
+  (audio-player-mpv--ready-p))
+
+(cl-defmethod audio-player-backend-remove-index ((backend audio-player-mpv) index)
+  "Remove the track at playlist position INDEX."
+  (audio-player-mpv--send (list "playlist-remove" index)))
 
 (cl-defmethod audio-player-backend-repeat ((backend audio-player-mpv))
   "Toggle repeat mode.")
@@ -268,18 +281,6 @@ Extracts id, filename (as url), and title from the hash table."
 (cl-defmethod audio-player-backend-toggle ((backend audio-player-mpv))
   "Toggle between playing and paused states."
   (audio-player-mpv--send (list "cycle" "pause")))
-
-(cl-defmethod audio-player-backend-play-index ((backend audio-player-mpv) index)
-  "Play the track at playlist position INDEX."
-  (audio-player-mpv--send (list "playlist-play-index" index)))
-
-(cl-defmethod audio-player-backend-remove-index ((backend audio-player-mpv) index)
-  "Remove the track at playlist position INDEX."
-  (audio-player-mpv--send (list "playlist-remove" index)))
-
-(cl-defmethod audio-player-backend-ready-p ((backend audio-player-backend))
-  "Return non-nil when the mpv backend is ready to accept IPC commands."
-  (audio-player-mpv--ready-p))
 
 (oset audio-player--instance backend audio-player-mpv--instance)
 

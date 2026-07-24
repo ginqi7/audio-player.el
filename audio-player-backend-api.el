@@ -23,7 +23,6 @@
 ;;
 
 ;;; Code:
-
 (require 'eieio)
 
 (defclass audio-player-backend ()
@@ -37,29 +36,40 @@ Backends must implement the `audio-player-backend-add',
 
 (cl-defmethod audio-player-backend-add ((backend audio-player-backend) url)
   "Add URL to the backend's playlist and begin playback.")
-(cl-defmethod audio-player-backend-toggle ((backend audio-player-backend))
-  "Toggle between playing and paused states.")
+
 (cl-defmethod audio-player-backend-next ((backend audio-player-backend))
   "Skip to the next track in the playlist.")
+
+(cl-defmethod audio-player-backend-play-index ((backend audio-player-backend) index)
+  "Play the track at playlist position INDEX.")
+
 (cl-defmethod audio-player-backend-prev ((backend audio-player-backend))
   "Go to the previous track in the playlist.")
+
+(cl-defmethod audio-player-backend-ready-p ((backend audio-player-backend))
+  "Return non-nil when the backend is ready to accept commands.")
+
+(cl-defmethod audio-player-backend-remove-index ((backend audio-player-backend) index)
+  "Remove the track at PLAYLIST-POS from the backend's playlist.")
+
+(cl-defmethod audio-player-backend-repeat ((backend audio-player-backend))
+  "Toggle repeat mode.")
+
 (cl-defmethod audio-player-backend-seek ((backend audio-player-backend) seconds mode)
   "Seek SECONDS in the current track.
 MODE should be \"absolute\" for an exact position or \"relative\" for an offset.")
+
 (cl-defmethod audio-player-backend-shuffle ((backend audio-player-backend))
   "Toggle shuffle mode.")
-(cl-defmethod audio-player-backend-repeat ((backend audio-player-backend))
-  "Toggle repeat mode.")
-(cl-defmethod audio-player-backend-stop ((backend audio-player-backend))
-  "Stop playback and shut down the backend process.")
+
 (cl-defmethod audio-player-backend-start ((backend audio-player-backend))
   "Start the backend process and prepare for playback.")
-(cl-defmethod audio-player-backend-play-index ((backend audio-player-backend) index)
-  "Play the track at playlist position INDEX.")
-(cl-defmethod audio-player-backend-remove-index ((backend audio-player-backend) index)
-  "Remove the track at PLAYLIST-POS from the backend's playlist.")
-(cl-defmethod audio-player-backend-ready-p ((backend audio-player-backend))
-  "Return non-nil when the backend is ready to accept commands.")
+
+(cl-defmethod audio-player-backend-stop ((backend audio-player-backend))
+  "Stop playback and shut down the backend process.")
+
+(cl-defmethod audio-player-backend-toggle ((backend audio-player-backend))
+  "Toggle between playing and paused states.")
 
 (provide 'audio-player-backend-api)
 ;;; audio-player-backend-api.el ends here
